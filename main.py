@@ -144,7 +144,7 @@ def analyze_url_with_gemini(url: str) -> dict | None:
 
     api_url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
     )
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
