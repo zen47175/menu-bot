@@ -10,7 +10,6 @@ from flask import Flask, request, abort
 import requests
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-import google.generativeai as genai
 
 app = Flask(__name__)
 
@@ -122,16 +121,13 @@ def get_today_menu() -> str:
 
 def analyze_url_with_gemini(url: str) -> dict | None:
     """
-    Ask Gemini to extract menu info from the given URL.
+    Ask Gemini to extract menu info from the given URL via REST API.
     Returns dict with keys: ชื่อเมนู, มื้อ, วัตถุดิบ, วิธีทำ, แคลอรี่
     or None on failure.
     """
     if not GEMINI_API_KEY:
         print("GEMINI_API_KEY not set")
         return None
-
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-1.5-flash")
 
     prompt = f"""คุณเป็นผู้ช่วยด้านอาหาร โปรดเข้าไปดูเนื้อหาจากลิงก์นี้: {url}
 
@@ -141,14 +137,21 @@ def analyze_url_with_gemini(url: str) -> dict | None:
   "มื้อ": "เช้า หรือ กลางวัน หรือ เย็น (เลือกที่เหมาะสมที่สุด)",
   "วัตถุดิบ": "รายการวัตถุดิบทั้งหมด คั่นด้วยจุลภาค",
   "วิธีทำ": "ขั้นตอนการทำอาหาร",
-  "แคลอรี่": "ประมาณกี่ แคลอรี่ต่อจาน (ตัวเลขเท่านั้น หรือ ไม่ทราบ)"
+  "แคลอรี่": "ประมาณกี่แคลอรี่ต่อจาน (ตัวเลขเท่านั้น หรือ ไม่ทราบ)"
 }}
 
 หากลิงก์ไม่สามารถเข้าถึงได้หรือไม่ใช่เมนูอาหาร ให้ตอบว่า: {{"error": "ไม่สามารถดึงข้อมูลเมนูจากลิงก์นี้ได้"}}"""
 
+    api_url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    )
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+
     try:
-        response = model.generate_content(prompt)
-        text = response.text.strip()
+        resp = requests.post(api_url, json=payload, timeout=30)
+        resp.raise_for_status()
+        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
         # Strip markdown code fences if present
         if text.startswith("```"):
             text = text.split("```")[1]
