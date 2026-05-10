@@ -404,7 +404,7 @@ def _parse_json(raw: str) -> dict | None:
         return None
 
 
-# ── @กิน processing (background thread) ──────────────────────────────────────
+# ── @วันนี้กินอะไร processing (background thread) ──────────────────────────────────────
 
 def process_gin_url(url: str):
     try:
@@ -556,7 +556,7 @@ def send_meal():
             push_message_to_group(
                 f"{emoji} ถึงเวลา{label}แล้ว! 🍽️\n\n"
                 f"ยังไม่มีเมนูใน MenuPool\n"
-                f"ลอง @กิน [ลิงก์] เพื่อเพิ่มเมนูก่อนนะคะ 😊"
+                f"ลอง @วันนี้กินอะไร [ลิงก์] เพื่อเพิ่มเมนูก่อนนะคะ 😊"
             )
         return "ok (no menu)", 200
 
@@ -615,14 +615,14 @@ def webhook():
             if src.get("type") == "group":
                 print(f"[GROUP MESSAGE] groupId={src.get('groupId', '')}")
 
-            # ── @กิน [URL] ──────────────────────────────────────────────────
-            if text.startswith("@กิน"):
+            # ── @วันนี้กินอะไร [URL] ──────────────────────────────────────────────────
+            if text.startswith("@วันนี้กินอะไร"):
                 parts = text.split(maxsplit=1)
                 if len(parts) < 2 or not parts[1].strip().startswith("http"):
                     reply_message_line(reply_token,
-                        "📌 วิธีใช้: @กิน [URL]\n"
+                        "📌 วิธีใช้: @วันนี้กินอะไร [URL]\n"
                         "รองรับ TikTok, Instagram Reels, YouTube Shorts\n\n"
-                        "ตัวอย่าง:\n@กิน https://www.tiktok.com/@xxx/video/123"
+                        "ตัวอย่าง:\n@วันนี้กินอะไร https://www.tiktok.com/@xxx/video/123"
                     )
                 else:
                     handle_gin_command(parts[1].strip(), reply_token)
@@ -689,7 +689,7 @@ def webhook():
                     if len(rows) <= 1:
                         reply_message_line(reply_token,
                             "📭 ยังไม่มีเมนูใน MenuPool\n"
-                            "ลอง @กิน [ลิงก์] เพื่อเพิ่มเมนูนะคะ"
+                            "ลอง @วันนี้กินอะไร [ลิงก์] เพื่อเพิ่มเมนูนะคะ"
                         )
                     else:
                         lines = ["📋 เมนูทั้งหมด:\n"]
@@ -709,7 +709,7 @@ def webhook():
             elif any(kw in text for kw in ["help", "ช่วย", "วิธีใช้", "คำสั่ง"]):
                 reply_message_line(reply_token,
                     "🤖 คำสั่งทั้งหมด:\n\n"
-                    "🍽️ @กิน [URL]\n   เพิ่มเมนูจาก TikTok / IG / YouTube\n\n"
+                    "🍽️ @วันนี้กินอะไร [URL]\n   เพิ่มเมนูจาก TikTok / IG / YouTube\n\n"
                     "🎯 @เป้าหมาย [เป้าหมาย]\n   ตัวอย่าง: ลดน้ำหนัก / เพิ่มกล้าม / ทั่วไป\n\n"
                     "📋 @เมนูทั้งหมด\n   ดูรายการเมนูทั้งหมด\n\n"
                     "🔄 @รีเซ็ต — เริ่ม random ใหม่\n"
