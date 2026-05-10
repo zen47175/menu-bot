@@ -38,8 +38,7 @@ MENU_POOL_HEADERS = [
 STATUS_WAITING = "รอ"
 STATUS_USED    = "ใช้แล้ว"
 
-GEMINI_API_BASE  = "https://generativelanguage.googleapis.com/v1beta/models/"
-GEMINI_UPLOAD_URL = "https://generativelanguage.googleapis.com/upload/v1beta/files"
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models/"
 
 
 # ── Google Sheets ─────────────────────────────────────────────────────────────
@@ -199,131 +198,85 @@ def reset_all_menus(service):
     ).execute()
 
 
-# ── Video download (yt-dlp) ───────────────────────────────────────────────────
+# ── Media extraction (yt-dlp metadata + thumbnail) ───────────────────────────
 
-def download_video(url: str) -> str | None:
-    """Download video to /tmp using yt-dlp library. Returns file path or None."""
-    ts       = int(time.time())
-    out_path = f"/tmp/video_{ts}.mp4"
-    ydl_opts = {
-        "format":        "best[ext=mp4][filesize<80M]/best[filesize<80M]/best",
-        "outtmpl":       out_path,
-        "quiet":         True,
-        "no_warnings":   True,
-        "noplaylist":    True,
-        "http_headers":  {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"},
-    }
+def get_media_info(url: str) -> dict:
+    """
+    Extract title, description, thumbnail_url from a social media URL.
+    Uses yt-dlp first, falls back to OG tag scraping.
+    Returns dict with keys: title, description, thumbnail_url (all may be empty).
+    """
+    # Try yt-dlp (handles TikTok video posts, YouTube, etc.)
     try:
+        ydl_opts = {
+            "quiet":       True,
+            "no_warnings": True,
+            "noplaylist":  True,
+            "http_headers": {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"},
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-        if os.path.exists(out_path):
-            size_mb = os.path.getsize(out_path) / 1024 / 1024
-            print(f"Downloaded {size_mb:.1f}MB → {out_path}")
-            return out_path
+            info = ydl.extract_info(url, download=False)
+        return {
+            "title":         info.get("title", ""),
+            "description":   info.get("description", ""),
+            "thumbnail_url": info.get("thumbnail", ""),
+        }
     except Exception as e:
-        print(f"download_video error: {e}")
-    # yt-dlp sometimes writes with different extension
-    for ext in ["mp4", "webm", "mkv", "mov"]:
-        alt = f"/tmp/video_{ts}.{ext}"
-        if os.path.exists(alt):
-            return alt
+        print(f"yt-dlp extract error: {e}")
+
+    # Fallback: scrape OG tags (works for photo posts, IG, etc.)
+    return _scrape_og_tags(url)
+
+
+def _scrape_og_tags(url: str) -> dict:
+    try:
+        r = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"},
+            timeout=10, allow_redirects=True,
+        )
+        html = r.text
+        og_title = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\'](.*?)["\']', html, re.I)
+        og_desc  = re.search(r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\'](.*?)["\']', html, re.I)
+        og_image = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\'](.*?)["\']', html, re.I)
+        title_tag = re.search(r'<title[^>]*>(.*?)</title>', html, re.I | re.S)
+        return {
+            "title":         og_title.group(1) if og_title else (title_tag.group(1).strip() if title_tag else ""),
+            "description":   og_desc.group(1) if og_desc else "",
+            "thumbnail_url": og_image.group(1) if og_image else "",
+        }
+    except Exception as e:
+        print(f"scrape_og_tags error: {e}")
+    return {"title": "", "description": "", "thumbnail_url": ""}
+
+
+def download_image(image_url: str) -> bytes | None:
+    """Download image from URL, return raw bytes or None."""
+    try:
+        r = requests.get(image_url, timeout=20,
+                         headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"})
+        if r.status_code == 200 and r.content:
+            return r.content
+    except Exception as e:
+        print(f"download_image error: {e}")
     return None
 
 
-# ── Gemini Files API ──────────────────────────────────────────────────────────
-
-def upload_to_gemini_files(video_path: str) -> tuple:
-    """Upload video to Gemini Files API. Returns (file_uri, file_name) or (None, None)."""
-    if not GEMINI_API_KEY:
-        return None, None
-    try:
-        file_size = os.path.getsize(video_path)
-        # Start resumable upload
-        init_resp = requests.post(
-            f"{GEMINI_UPLOAD_URL}?key={GEMINI_API_KEY}",
-            headers={
-                "X-Goog-Upload-Protocol":            "resumable",
-                "X-Goog-Upload-Command":             "start",
-                "X-Goog-Upload-Header-Content-Length": str(file_size),
-                "X-Goog-Upload-Header-Content-Type": "video/mp4",
-                "Content-Type":                      "application/json",
-            },
-            json={"file": {"display_name": "menu_video"}},
-            timeout=30,
-        )
-        if init_resp.status_code != 200:
-            print(f"Upload init failed: {init_resp.status_code} {init_resp.text[:200]}")
-            return None, None
-
-        upload_url = init_resp.headers.get("X-Goog-Upload-URL")
-        if not upload_url:
-            return None, None
-
-        # Upload bytes
-        with open(video_path, "rb") as f:
-            video_bytes = f.read()
-
-        up_resp = requests.post(
-            upload_url,
-            headers={
-                "Content-Length":        str(file_size),
-                "X-Goog-Upload-Offset":  "0",
-                "X-Goog-Upload-Command": "upload, finalize",
-            },
-            data=video_bytes,
-            timeout=300,
-        )
-        if up_resp.status_code != 200:
-            print(f"Upload data failed: {up_resp.status_code} {up_resp.text[:200]}")
-            return None, None
-
-        file_meta = up_resp.json().get("file", {})
-        file_uri  = file_meta.get("uri")
-        file_name = file_meta.get("name", "")
-
-        # Wait until ACTIVE (usually instant for short clips)
-        for _ in range(15):
-            state = file_meta.get("state", "ACTIVE")
-            if state == "ACTIVE":
-                break
-            if state == "FAILED":
-                print("Gemini file processing FAILED")
-                return None, None
-            time.sleep(3)
-            check = requests.get(
-                f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={GEMINI_API_KEY}",
-                timeout=10,
-            )
-            if check.status_code == 200:
-                file_meta = check.json()
-
-        return file_uri, file_name
-    except Exception as e:
-        print(f"upload_to_gemini_files error: {e}")
-        return None, None
-
-
-def delete_gemini_file(file_name: str):
-    if not GEMINI_API_KEY or not file_name:
-        return
-    try:
-        requests.delete(
-            f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={GEMINI_API_KEY}",
-            timeout=10,
-        )
-    except Exception:
-        pass
-
-
-def analyze_video_gemini(file_uri: str) -> dict | None:
-    """Ask Gemini Vision to identify food menu from uploaded video. Returns dict or None."""
+def analyze_image_with_gemini(image_bytes: bytes, context: str) -> dict | None:
+    """
+    Send thumbnail image + text context to Gemini Vision (inline base64).
+    Returns menu dict or None.
+    """
     if not GEMINI_API_KEY:
         return None
 
-    prompt = """คุณเป็นผู้เชี่ยวชาญด้านอาหาร ดูวิดีโอนี้แล้วสกัดข้อมูลเมนูอาหาร
+    image_b64 = base64.b64encode(image_bytes).decode()
+    prompt = f"""คุณเป็นผู้เชี่ยวชาญด้านอาหาร ดูรูปภาพ thumbnail จากโพสต์โซเชียลมีเดียนี้
 
-ตอบเป็น JSON เท่านั้น ห้ามมีข้อความอื่นนอกจาก JSON:
-{
+บริบทจากโพสต์: {context[:500]}
+
+สกัดข้อมูลเมนูอาหารออกมาใน JSON เท่านั้น ห้ามมีข้อความอื่น:
+{{
   "ชื่อเมนู": "ชื่ออาหาร",
   "มื้อ": "เช้า หรือ กลางวัน หรือ เย็น",
   "วัตถุดิบ": "รายการวัตถุดิบทั้งหมด คั่นด้วยจุลภาค",
@@ -331,14 +284,14 @@ def analyze_video_gemini(file_uri: str) -> dict | None:
   "แคลอรี่": "ตัวเลขแคลอรี่ต่อจาน เช่น 450",
   "เป้าหมาย": "ลดน้ำหนัก หรือ เพิ่มกล้าม หรือ ทั่วไป",
   "ของว่างแนะนำ": "ของว่างหรืออาหารเสริมที่กินคู่กันได้"
-}
+}}
 
-ถ้าวิดีโอไม่ใช่เมนูอาหาร ตอบ: {"error": "ไม่พบเมนูอาหาร"}"""
+ถ้าไม่ใช่อาหาร ตอบ: {{"error": "ไม่พบเมนูอาหาร"}}"""
 
     payload = {
         "contents": [{
             "parts": [
-                {"file_data": {"mime_type": "video/mp4", "file_uri": file_uri}},
+                {"inline_data": {"mime_type": "image/jpeg", "data": image_b64}},
                 {"text": prompt},
             ]
         }]
@@ -350,7 +303,7 @@ def analyze_video_gemini(file_uri: str) -> dict | None:
                 resp = requests.post(
                     f"{GEMINI_API_BASE}{model}:generateContent?key={GEMINI_API_KEY}",
                     json=payload,
-                    timeout=90,
+                    timeout=60,
                 )
                 if resp.status_code == 429:
                     time.sleep(2 ** attempt)
@@ -359,9 +312,32 @@ def analyze_video_gemini(file_uri: str) -> dict | None:
                 raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
                 return _parse_json(raw)
             except Exception as e:
-                print(f"analyze_video ({model} #{attempt + 1}): {e}")
+                print(f"analyze_image ({model} #{attempt + 1}): {e}")
                 time.sleep(2)
     return None
+
+
+def analyze_text_only_with_gemini(title: str, description: str, url: str) -> dict | None:
+    """Fallback: analyze using only title + description when no image available."""
+    context = f"URL: {url}\nชื่อ: {title}\nคำอธิบาย: {description}"
+    prompt = f"""คุณเป็นผู้เชี่ยวชาญด้านอาหาร วิเคราะห์จากชื่อและคำอธิบายของโพสต์นี้:
+
+{context}
+
+สกัดข้อมูลเมนูอาหารใน JSON เท่านั้น:
+{{
+  "ชื่อเมนู": "ชื่ออาหาร",
+  "มื้อ": "เช้า หรือ กลางวัน หรือ เย็น",
+  "วัตถุดิบ": "รายการวัตถุดิบทั้งหมด",
+  "วิธีทำ": "ขั้นตอนการทำ",
+  "แคลอรี่": "ประมาณ (ตัวเลข)",
+  "เป้าหมาย": "ลดน้ำหนัก หรือ เพิ่มกล้าม หรือ ทั่วไป",
+  "ของว่างแนะนำ": "ของว่างที่กินคู่กันได้"
+}}
+
+ถ้าไม่ใช่อาหาร ตอบ: {{"error": "ไม่พบเมนูอาหาร"}}"""
+    raw = call_gemini_text(prompt)
+    return _parse_json(raw) if raw else None
 
 
 def call_gemini_text(prompt: str) -> str | None:
@@ -404,33 +380,36 @@ def _parse_json(raw: str) -> dict | None:
 # ── @กิน processing (background thread) ──────────────────────────────────────
 
 def process_gin_url(url: str):
-    video_path = None
-    file_name  = None
     try:
-        # 1. Download
-        push_message_to_group("⬇️ กำลังดาวน์โหลดวิดีโอ...")
-        video_path = download_video(url)
-        if not video_path:
-            push_message_to_group(
-                "❌ ดาวน์โหลดไม่ได้\n"
-                "อาจเป็น private video หรือ link หมดอายุ\n"
-                "ลองส่ง link อื่นนะคะ"
-            )
-            return
+        # 1. Extract metadata + thumbnail URL via yt-dlp (or OG tag fallback)
+        push_message_to_group("🔎 กำลังดึงข้อมูลจากลิงก์...")
+        info = get_media_info(url)
+        title       = info.get("title", "")
+        description = info.get("description", "")
+        thumb_url   = info.get("thumbnail_url", "")
+        context     = f"{title}\n{description}".strip()
+        print(f"Media info — title: {title[:80]}, thumb: {thumb_url[:80]}")
 
-        # 2. Upload to Gemini
-        push_message_to_group("🤖 กำลังให้ AI วิเคราะห์เมนู...")
-        file_uri, file_name = upload_to_gemini_files(video_path)
-        if not file_uri:
-            push_message_to_group("❌ อัพโหลดวิดีโอให้ AI ไม่สำเร็จ กรุณาลองใหม่")
-            return
+        # 2. Download thumbnail image
+        menu = None
+        if thumb_url:
+            push_message_to_group("🤖 กำลังให้ AI วิเคราะห์รูปเมนู...")
+            image_bytes = download_image(thumb_url)
+            if image_bytes:
+                menu = analyze_image_with_gemini(image_bytes, context)
 
-        # 3. Analyze
-        menu = analyze_video_gemini(file_uri)
+        # 3. Fallback: text-only analysis if no image or image analysis failed
+        if not menu and context:
+            push_message_to_group("📝 วิเคราะห์จากชื่อ/คำอธิบายโพสต์...")
+            menu = analyze_text_only_with_gemini(title, description, url)
+
         if not menu:
             push_message_to_group(
-                "❌ AI ระบุเมนูอาหารไม่ได้จากวิดีโอนี้\n"
-                "ลองส่ง TikTok/IG ที่เห็นอาหารชัดๆ นะคะ 😊"
+                "❌ AI ระบุเมนูอาหารไม่ได้จากลิงก์นี้\n\n"
+                "💡 ลองส่งลิงก์ที่:\n"
+                "• เป็น Public post\n"
+                "• เห็นอาหารชัดๆ\n"
+                "• มีคำอธิบายในโพสต์"
             )
             return
 
@@ -471,11 +450,6 @@ def process_gin_url(url: str):
     except Exception as e:
         print(f"process_gin_url error: {e}")
         push_message_to_group("⚠️ เกิดข้อผิดพลาดระหว่างวิเคราะห์ กรุณาลองใหม่อีกครั้ง")
-    finally:
-        if video_path and os.path.exists(video_path):
-            os.remove(video_path)
-        if file_name:
-            delete_gemini_file(file_name)
 
 
 def handle_gin_command(url: str, reply_token: str):
