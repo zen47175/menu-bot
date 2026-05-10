@@ -203,10 +203,27 @@ def reset_all_menus(service):
 def get_media_info(url: str) -> dict:
     """
     Extract title, description, thumbnail_url from a social media URL.
-    Uses yt-dlp first, falls back to OG tag scraping.
+    Priority: TikTok oEmbed → yt-dlp → OG tag scraping.
     Returns dict with keys: title, description, thumbnail_url (all may be empty).
     """
-    # Try yt-dlp (handles TikTok video posts, YouTube, etc.)
+    # TikTok oEmbed API (official, free, no auth, works for all public videos)
+    if "tiktok.com" in url:
+        try:
+            # Follow short URLs first to get canonical URL
+            canonical = _follow_redirect(url)
+            oembed_url = f"https://www.tiktok.com/oembed?url={requests.utils.quote(canonical)}"
+            r = requests.get(oembed_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                return {
+                    "title":         data.get("title", ""),
+                    "description":   data.get("title", ""),
+                    "thumbnail_url": data.get("thumbnail_url", ""),
+                }
+        except Exception as e:
+            print(f"TikTok oEmbed error: {e}")
+
+    # yt-dlp fallback (YouTube Shorts, Instagram, etc.)
     try:
         ydl_opts = {
             "quiet":       True,
@@ -224,8 +241,18 @@ def get_media_info(url: str) -> dict:
     except Exception as e:
         print(f"yt-dlp extract error: {e}")
 
-    # Fallback: scrape OG tags (works for photo posts, IG, etc.)
+    # Last resort: scrape OG tags
     return _scrape_og_tags(url)
+
+
+def _follow_redirect(url: str) -> str:
+    """Follow HTTP redirects and return final URL."""
+    try:
+        r = requests.head(url, allow_redirects=True, timeout=10,
+                          headers={"User-Agent": "Mozilla/5.0"})
+        return r.url
+    except Exception:
+        return url
 
 
 def _scrape_og_tags(url: str) -> dict:
@@ -297,7 +324,7 @@ def analyze_image_with_gemini(image_bytes: bytes, context: str) -> dict | None:
         }]
     }
 
-    for model in ["gemini-2.0-flash", "gemini-1.5-flash"]:
+    for model in ["gemini-2.0-flash-lite", "gemini-2.0-flash", "gemini-2.5-flash"]:
         for attempt in range(3):
             try:
                 resp = requests.post(
@@ -345,7 +372,7 @@ def call_gemini_text(prompt: str) -> str | None:
     if not GEMINI_API_KEY:
         return None
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    for model in ["gemini-1.5-flash-8b", "gemini-1.5-flash", "gemini-2.0-flash"]:
+    for model in ["gemini-2.0-flash-lite", "gemini-2.0-flash", "gemini-2.5-flash"]:
         for attempt in range(3):
             try:
                 resp = requests.post(
